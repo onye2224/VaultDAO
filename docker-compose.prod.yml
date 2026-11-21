@@ -1,23 +1,76 @@
 # ==============================================================================
-# VaultDAO Production Frontend Override
+# VaultDAO Production Compose Override
 # ==============================================================================
-# Serves the built frontend from the Nginx runner image on its real port (80).
-# Run with: docker compose -f docker-compose.prod.yml up frontend
+# Runs compiled production images for both backend and frontend.
+# Extend the base compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Or use the smoke-test script to verify the stack after deployment:
+#
+#   bash scripts/smoke-test.sh
+#
+# See docs/guides/DOCKER_PRODUCTION.md for full deployment guidance.
 
 services:
+
+  # ----------------------------------------------------------------------------
+  # Backend – compiled Node.js app (dist/index.js), non-root user
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runner
+    image: vaultdao-backend:prod
+    container_name: vaultdao-backend
+    environment:
+      - NODE_ENV=production
+    # Override the dev command so the runner CMD (node dist/index.js) is used
+    command: []
+    healthcheck:
+      # Uses node's built-in http module; no curl dependency required in runner
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('http').get(
+            'http://localhost:' + (process.env.PORT || 8787) + '/health',
+            (r) => { process.exit(r.statusCode === 200 ? 0 : 1) }
+          ).on('error', () => process.exit(1))
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      - vaultdao-net
+
+  # ----------------------------------------------------------------------------
+  # Frontend – Nginx with SPA fallback and security headers
+  # ----------------------------------------------------------------------------
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       target: runner
-    # Distinct tag so the production build does not overwrite the dev image
     image: vaultdao-frontend:prod
     container_name: vaultdao-frontend
-    # Nginx listens on 80 inside the container; map it to host port 8080
+    # Nginx listens on 80 inside; expose on 8080 to avoid requiring root on host
     ports:
       - "8080:80"
+    # Nginx runner has its own HEALTHCHECK instruction; compose respects it
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     networks:
       - vaultdao-net
+    depends_on:
+      backend:
+        condition: service_healthy
 
 networks:
   vaultdao-net:

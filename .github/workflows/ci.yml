@@ -65,6 +65,35 @@ jobs:
       - name: Build runner image
         run: docker build --target runner -t vaultdao-backend:ci ./backend
 
+  frontend-docker-headers:
+    name: Frontend Docker Image – Security Headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build frontend runner image
+        run: docker build --target runner -t vaultdao-frontend:ci ./frontend
+
+      - name: Start Nginx container
+        run: |
+          docker run -d --name fe-ci -p 8080:80 vaultdao-frontend:ci
+          # Wait for Nginx to be ready
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:8080/healthz && break || sleep 1
+          done
+
+      - name: Security header regression check
+        run: bash scripts/check-headers.sh http://localhost:8080
+
+      - name: SPA fallback check
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/some/deep/route)
+          [ "$status" = "200" ] || (echo "SPA fallback failed: HTTP $status" && exit 1)
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f fe-ci
+
   contract:
     name: Contract
     runs-on: ubuntu-latest
@@ -91,3 +120,15 @@ jobs:
 
       - name: Check contract library
         run: cargo check --lib
+
+      - name: Run proptest suite (bounded)
+        # Runs the six proptest invariant modules with the in-source case counts
+        # (16–64 cases each) so CI stays fast while still catching regressions.
+        run: |
+          cargo test --lib -- \
+            test_spending_limit_invariants_proptest \
+            test_stream_vesting_invariants_proptest \
+            test_stream_rate_accrual \
+            test_spending_limit_proptest_extended \
+            test_reentrancy_proptest \
+            test_reservation_accounting_proptest

@@ -1,0 +1,83 @@
+name: Proptest Nightly (Extended)
+
+# Runs automatically every night at 02:00 UTC and can be triggered manually
+# to run either the standard (bounded) or extended (wider) case count.
+#
+# See docs/reference/TESTING.md § "Nightly proptest workflow" for how to
+# reproduce a minimized counterexample from a saved regression seed.
+
+on:
+  schedule:
+    # 02:00 UTC every day
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      proptest_cases:
+        description: "Number of proptest cases per property (default: 256)"
+        required: false
+        default: "256"
+      proptest_max_shrink_iters:
+        description: "Max shrink iterations (default: 10000)"
+        required: false
+        default: "10000"
+
+jobs:
+  proptest-extended:
+    name: Proptest Extended Cases
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/vault
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/vault/target
+          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('contracts/vault/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-nightly-
+
+      - name: Run bounded proptest suite (CI)
+        run: cargo test --lib -- test_spending_limit_invariants_proptest test_stream_vesting_invariants_proptest test_stream_rate_accrual test_spending_limit_proptest_extended test_reentrancy_proptest test_reservation_accounting_proptest --nocapture
+
+      - name: Run extended proptest suite (nightly wider run)
+        env:
+          # Override the in-source ProptestConfig case counts via the standard
+          # PROPTEST_CASES environment variable recognised by proptest ≥ 1.0.
+          PROPTEST_CASES: ${{ github.event.inputs.proptest_cases || '256' }}
+          PROPTEST_MAX_SHRINK_ITERS: ${{ github.event.inputs.proptest_max_shrink_iters || '10000' }}
+        run: |
+          cargo test --lib -- \
+            test_spending_limit_invariants_proptest \
+            test_stream_vesting_invariants_proptest \
+            test_stream_rate_accrual \
+            test_spending_limit_proptest_extended \
+            test_reentrancy_proptest \
+            test_reservation_accounting_proptest \
+            --nocapture 2>&1 | tee /tmp/proptest-nightly.log
+
+      - name: Upload proptest failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proptest-nightly-failures
+          path: |
+            /tmp/proptest-nightly.log
+            contracts/vault/proptest-regressions/
+
+      - name: Upload regression seeds (always, so new seeds are captured)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proptest-regression-seeds
+          path: contracts/vault/proptest-regressions/

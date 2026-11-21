@@ -943,6 +943,117 @@ For the backend, confirm the variable you're relying on actually exists in `back
 
 ---
 
+## 8. Formal Verification / Proptest Suite (Issue #2077)
+
+This section documents the extended property-based test suite added in Issue #2077, how the nightly workflow operates, and how to reproduce a minimized counterexample from a saved regression seed.
+
+### 8.1 New invariant modules
+
+Three new proptest invariant modules were added under `contracts/vault/src/`:
+
+| Module | Properties covered |
+|---|---|
+| `test_spending_limit_proptest_extended.rs` | Multi-proposer shared daily/weekly limits never exceeded; weekly-boundary crossings reset counters; cancelling all pending proposals from all proposers drives counters to zero |
+| `test_reentrancy_proptest.rs` | No terminal proposal has the in-progress guard set; at most one proposal has the guard set at any point; a blocked re-entrant execute leaves the proposal in `Approved` status |
+| `test_reservation_accounting_proptest.rs` | All six reservation-accounting invariants over three-proposer sequences: counters ≥ 0, within limits, `total_reserved ≤ vault balance`; full cancel drives counters to zero |
+
+Combined with the three existing proptest modules (`test_spending_limit_invariants_proptest`, `test_stream_vesting_invariants_proptest`, `test_stream_rate_accrual`), the suite now covers spending limits, streaming accrual, reentrancy guards, and pending reservations.
+
+### 8.2 Running the proptest suite
+
+```bash
+cd contracts/vault
+
+# Bounded run (same as CI — 16–64 cases per property, fast)
+cargo test --lib -- \
+  test_spending_limit_invariants_proptest \
+  test_stream_vesting_invariants_proptest \
+  test_stream_rate_accrual \
+  test_spending_limit_proptest_extended \
+  test_reentrancy_proptest \
+  test_reservation_accounting_proptest \
+  --nocapture
+
+# Extended run (wider exploration — set PROPTEST_CASES before the command)
+PROPTEST_CASES=512 PROPTEST_MAX_SHRINK_ITERS=20000 cargo test --lib -- \
+  test_spending_limit_proptest_extended \
+  test_reentrancy_proptest \
+  test_reservation_accounting_proptest \
+  --nocapture
+```
+
+### 8.3 Nightly workflow
+
+`.github/workflows/proptest-nightly.yml` runs automatically at 02:00 UTC every day:
+
+1. **Bounded step** — runs the same proptest modules as CI with the in-source case counts, to verify the nightly env is clean.
+2. **Extended step** — re-runs all six modules with `PROPTEST_CASES=256` (default; override via `workflow_dispatch` input), giving roughly 4× more exploration per property than the daily CI run.
+
+If the nightly run fails, two artifacts are uploaded:
+- `proptest-nightly-failures` — the full log plus any failure-seed files written to `proptest-regressions/`.
+- `proptest-regression-seeds` — the current state of `contracts/vault/proptest-regressions/` (uploaded on every run so newly discovered seeds are captured even when the run exits with a non-zero status).
+
+To trigger a manual wider run:
+1. Go to **Actions → Proptest Nightly (Extended)** in the GitHub UI.
+2. Click **Run workflow**.
+3. Set `proptest_cases` (e.g. `1024`) and `proptest_max_shrink_iters` (e.g. `50000`).
+
+### 8.4 Reproducing a minimized counterexample
+
+When proptest finds a failure it:
+1. Prints the failing input (before shrinking) and the panic message.
+2. Shrinks the input to the smallest value that still triggers the failure.
+3. Writes a seed file to `contracts/vault/proptest-regressions/<module_name>.txt`.
+
+**Step-by-step reproduction:**
+
+```bash
+# 1. Make sure the seed file is present (commit it, or copy from the CI artifact).
+ls contracts/vault/proptest-regressions/
+
+# 2. Run only the failing test with --nocapture to see the full output.
+cd contracts/vault
+cargo test --lib <failing_test_name> -- --nocapture
+
+# Proptest automatically reads the seed file and replays the minimized case first.
+# The output will show the minimized input and the assertion that failed.
+
+# 3. To run with more shrink iterations to find an even smaller counterexample:
+PROPTEST_MAX_SHRINK_ITERS=100000 cargo test --lib <failing_test_name> -- --nocapture
+
+# 4. To replay a specific raw seed from the seed file without running other cases:
+PROPTEST_CASES=1 cargo test --lib <failing_test_name> -- --nocapture
+```
+
+**Reading the seed file:**
+
+Seed files in `proptest-regressions/` use proptest's internal `# Seeds for failing` format:
+
+```
+# Seeds for failing cases proptest has discovered. It is not intended
+# ... (header comments) ...
+xs 123456789 0
+```
+
+The hex token and integer after `xs` / `cc` / `fc` are the RNG seed and case index. You do not need to parse this by hand — proptest reads it automatically on the next test run. The file is committed to source control so CI always replays known failures before exploring new space.
+
+**Writing a fixed regression test:**
+
+Once you understand the minimized counterexample, extract it as a deterministic `#[test]` in the relevant unit test file so it can never silently regress, then delete the seed file and add the new unit test to the PR.
+
+```rust
+// Example: extracted from a proptest regression seed
+#[test]
+fn test_regression_2077_weekly_boundary_reservation_bleed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, token) = setup(&env);
+    // ... exact minimized steps that reproduced the failure ...
+}
+```
+
+---
+
 ## Additional Resources
 
 - [Soroban Testing Docs](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup)

@@ -408,6 +408,13 @@ mod test_spending_limit_invariants_proptest;
 mod test_spending_refund_buckets;
 #[cfg(test)]
 mod test_stream_vesting_invariants_proptest;
+// Issue #2077 — extended proptest invariant modules
+#[cfg(test)]
+mod test_spending_limit_proptest_extended;
+#[cfg(test)]
+mod test_reentrancy_proptest;
+#[cfg(test)]
+mod test_reservation_accounting_proptest;
 
 #[cfg(test)]
 mod test;
