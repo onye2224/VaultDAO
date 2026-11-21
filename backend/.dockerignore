@@ -14,7 +14,9 @@ README.md
 .DS_Store
 coverage
 target
+# pnpm artefacts – this project uses npm (package-lock.json is canonical)
 .pnpm-store
+pnpm-lock.yaml
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
