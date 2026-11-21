@@ -6,6 +6,14 @@ import type { CacheManager } from "../../shared/cache/cache-manager.js";
 import type { VaultRegistry } from "./vault-registry.service.js";
 import { success, error } from "../../shared/http/response.js";
 import { ErrorCode } from "../../shared/http/errorCodes.js";
+import { VaultTemplateService } from "./vault-template.service.js";
+import {
+  listTemplatesController,
+  getTemplateController,
+  createTemplateController,
+  instantiateTemplateController,
+  deactivateTemplateController,
+} from "./vault-template.controller.js";
 
 const STELLAR_CONTRACT_RE = /^C[A-Z0-9]{55}$/;
 
@@ -20,6 +28,32 @@ export function createVaultRouter(
   const service = new VaultService(rpcUrl, networkPassphrase);
 
   router.get("/config", createVaultConfigController(service, cache));
+
+  // ── Template catalog (Issue #2081) ──────────────────────────────────────
+  const templateService = new VaultTemplateService();
+  const authGuardTemplates = adminAuthMiddleware ?? ((_req: Request, _res: Response, next: NextFunction) => next());
+
+  /** GET  /api/v1/vault/templates                  — public */
+  router.get("/templates", listTemplatesController(templateService));
+
+  /** GET  /api/v1/vault/templates/:templateId      — public */
+  router.get("/templates/:templateId", getTemplateController(templateService));
+
+  /** POST /api/v1/vault/templates                  — admin */
+  router.post("/templates", authGuardTemplates, createTemplateController(templateService));
+
+  /** POST /api/v1/vault/templates/:templateId/instantiate — authenticated */
+  router.post(
+    "/templates/:templateId/instantiate",
+    instantiateTemplateController(templateService),
+  );
+
+  /** DELETE /api/v1/vault/templates/:templateId    — admin */
+  router.delete(
+    "/templates/:templateId",
+    authGuardTemplates,
+    deactivateTemplateController(templateService),
+  );
 
   if (registry) {
     /**
